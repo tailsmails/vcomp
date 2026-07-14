@@ -39,7 +39,7 @@ v install --git https://github.com/tailsmails/vcomp
 This self-contained example blocks the `ptrace` system call with an `EPERM` (1) errno, and then attempts to call it using raw C syscalls to verify that the restriction is actively enforced.
 
 ```v
-import tailsmails.vcomp as vcomp
+import vcomp
 import os
 
 // Declare the external C syscall function
