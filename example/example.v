@@ -7,7 +7,7 @@ fn main() {
 	println('Applying BPF filter...')
 
 	vcomp.block_with_errno(['ptrace'], 1) or {
-		println('Failed to apply filter: $err')
+		println('Failed to apply filter: ${err}')
 		return
 	}
 
