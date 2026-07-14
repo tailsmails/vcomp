@@ -50,7 +50,7 @@ fn main() {
 
 	// Block 'ptrace' and return errno 1 (EPERM - Operation not permitted) if called
 	vcomp.block_with_errno(['ptrace'], 1) or {
-		println('Failed to apply filter: $err')
+		println('Failed to apply filter: ${err}')
 		return
 	}
 
