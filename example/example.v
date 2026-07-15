@@ -1,19 +1,29 @@
 import vcomp
 
 fn main() {
-	println('Applying BPF filter...')
+	println('Applying conditional filter...')
 
-	vcomp.block_with_errno(['ptrace'], 1) or {
-		println('Failed to apply filter: ${err}')
-		return
-	}
+	vcomp.new_filter()
+		.set_type(.allowlist)
+		.allow('write').where_arg(0, .eq, 1)
+		.allow('exit_group')
+		.apply() or {
+			println('Failed to apply filter: ${err}')
+			return
+		}
 
 	println('Filter applied successfully!')
-	println('Testing ptrace block...')
+	println('Testing write to stdout (FD 1)...')
 
-	res := vcomp.call('ptrace', 0, 0, 0, 0) or {
-		println('ptrace failed as expected! Error details: ${err}')
+	vcomp.call('write', 1, 'This is allowed!\n', 17) or {
+		println(err)
 		return
 	}
-	println('WARNING: ptrace call was allowed. Result: ${res}')
+
+	println('Testing write to stderr (FD 2)...')
+
+	vcomp.call('write', 2, 'This will be blocked!\n', 22) or {
+		println('Error: ${err}')
+		return
+	}
 }
