@@ -2,8 +2,42 @@ module vcomp
 import os
 
 #flag -D_GNU_SOURCE
-#include <sys/prctl.h>
-#include <linux/filter.h>
+
+$if linux || android || termux {
+	#include <sys/prctl.h>
+	#include <linux/filter.h>
+
+	pub struct C.sock_filter {
+	pub mut:
+		code u16
+		jt   u8
+		jf   u8
+		k    u32
+	}
+
+	pub struct C.sock_fprog {
+	pub mut:
+		len    u16
+		filter &C.sock_filter
+	}
+
+	fn C.prctl(option int, arg2 u64, arg3 u64, arg4 u64, arg5 u64) int
+	fn C.syscall(number int, arg1 voidptr, arg2 voidptr, arg3 voidptr, arg4 voidptr, arg5 voidptr, arg6 voidptr) i64
+} $else {
+	pub struct C.sock_filter {
+	pub mut:
+		code u16
+		jt   u8
+		jf   u8
+		k    u32
+	}
+
+	pub struct C.sock_fprog {
+	pub mut:
+		len    u16
+		filter &C.sock_filter
+	}
+}
 
 pub const bpf_ld = u16(0x00)
 pub const bpf_w = u16(0x00)
@@ -25,23 +59,6 @@ pub const audit_arch_aarch64 = u32(0xc00000b7)
 pub const audit_arch_arm = u32(0x40000028)
 pub const audit_arch_riscv64 = u32(0xc00000f3)
 
-pub struct C.sock_filter {
-pub mut:
-	code u16
-	jt   u8
-	jf   u8
-	k    u32
-}
-
-pub struct C.sock_fprog {
-pub mut:
-	len    u16
-	filter &C.sock_filter
-}
-
-fn C.prctl(option int, arg2 u64, arg3 u64, arg4 u64, arg5 u64) int
-fn C.syscall(number int, arg1 voidptr, arg2 voidptr, arg3 voidptr, arg4 voidptr, arg5 voidptr, arg6 voidptr) i64
-
 pub enum FilterType {
 	blocklist
 	allowlist
@@ -55,15 +72,103 @@ pub enum Action {
 	errno_error
 }
 
+pub enum Op {
+	eq
+}
+
+pub struct ArgRule {
+pub:
+	index int
+	op    Op = .eq
+	value u64
+}
+
 pub type Syscall = int | string
 pub type SyscallArg = int | u64 | voidptr | string
+
+pub struct SyscallRule {
+pub:
+	sys    Syscall
+	action Action = .kill_process
+pub mut:
+	args   []ArgRule
+}
 
 pub struct FilterConfig {
 pub:
 	filter_type FilterType = .blocklist
-	syscalls    []Syscall
-	action      Action = .kill_process
-	errno_code  int    = 1
+	rules       []SyscallRule
+	errno_code  int        = 1
+}
+
+pub struct FilterBuilder {
+pub mut:
+	filter_type FilterType = .blocklist
+	rules       []SyscallRule
+	errno_code  int        = 1
+}
+
+pub fn new_filter() FilterBuilder {
+	return FilterBuilder{}
+}
+
+pub fn (b FilterBuilder) set_type(t FilterType) FilterBuilder {
+	mut new_b := b
+	new_b.filter_type = t
+	return new_b
+}
+
+pub fn (b FilterBuilder) set_errno(code int) FilterBuilder {
+	mut new_b := b
+	new_b.errno_code = code
+	return new_b
+}
+
+pub fn (b FilterBuilder) block(sys Syscall) FilterBuilder {
+	mut new_b := b
+	new_b.rules << SyscallRule{
+		sys: sys
+		action: .kill_process
+	}
+	return new_b
+}
+
+pub fn (b FilterBuilder) block_with_errno(sys Syscall) FilterBuilder {
+	mut new_b := b
+	new_b.rules << SyscallRule{
+		sys: sys
+		action: .errno_error
+	}
+	return new_b
+}
+
+pub fn (b FilterBuilder) allow(sys Syscall) FilterBuilder {
+	mut new_b := b
+	new_b.rules << SyscallRule{
+		sys: sys
+		action: .allow
+	}
+	return new_b
+}
+
+pub fn (b FilterBuilder) where_arg(index int, op Op, value u64) FilterBuilder {
+	mut new_b := b
+	if new_b.rules.len > 0 {
+		new_b.rules[new_b.rules.len - 1].args.clone() << ArgRule{
+			index: index
+			op: op
+			value: value
+		}
+	}
+	return new_b
+}
+
+pub fn (b FilterBuilder) apply() ! {
+	apply(
+		filter_type: b.filter_type
+		rules: b.rules
+		errno_code: b.errno_code
+	)!
 }
 
 fn get_audit_arch() u32 {
@@ -102,19 +207,23 @@ fn cast_arg(arg SyscallArg) voidptr {
 }
 
 pub fn call(sys Syscall, args ...SyscallArg) !i64 {
-	sys_nr := resolve_syscall(sys)!
-	mut c_args := []voidptr{len: 6, init: voidptr(0)}
-	for i, arg in args {
-		if i >= 6 {
-			break
+	$if linux || android || termux {
+		sys_nr := resolve_syscall(sys)!
+		mut c_args := []voidptr{len: 6, init: voidptr(0)}
+		for i, arg in args {
+			if i >= 6 {
+				break
+			}
+			c_args[i] = cast_arg(arg)
 		}
-		c_args[i] = cast_arg(arg)
+		res := unsafe { C.syscall(sys_nr, c_args[0], c_args[1], c_args[2], c_args[3], c_args[4], c_args[5]) }
+		if res == -1 {
+			return error(os.error_posix().msg())
+		}
+		return res
+	} $else {
+		return error('syscall execution is only supported on linux, android, and termux')
 	}
-	res := unsafe { C.syscall(sys_nr, c_args[0], c_args[1], c_args[2], c_args[3], c_args[4], c_args[5]) }
-	if res == -1 {
-		return error(os.error_posix().msg())
-	}
-	return res
 }
 
 pub fn get_syscall_number(sys Syscall) !int {
@@ -122,8 +231,8 @@ pub fn get_syscall_number(sys Syscall) !int {
 }
 
 pub fn build_bpf_filter(config FilterConfig) ![]C.sock_filter {
-	if config.syscalls.len == 0 {
-		return error('syscall list cannot be empty')
+	if config.rules.len == 0 {
+		return error('rules list cannot be empty')
 	}
 
 	target_arch := get_audit_arch()
@@ -131,12 +240,7 @@ pub fn build_bpf_filter(config FilterConfig) ![]C.sock_filter {
 		return error('unsupported CPU architecture for BPF filtering')
 	}
 
-	mut resolved_syscalls := []int{cap: config.syscalls.len}
-	for sys in config.syscalls {
-		resolved_syscalls << resolve_syscall(sys)!
-	}
-
-	mut filter := []C.sock_filter{cap: resolved_syscalls.len + 6}
+	mut filter := []C.sock_filter{cap: config.rules.len * 5 + 6}
 
 	filter << C.sock_filter{
 		code: bpf_ld | bpf_w | bpf_abs
@@ -164,39 +268,67 @@ pub fn build_bpf_filter(config FilterConfig) ![]C.sock_filter {
 		k: 0
 	}
 
-	n := resolved_syscalls.len
-	for i, sys_nr in resolved_syscalls {
-		jt_offset := u8(n - i)
+	default_action_val := if config.filter_type == .allowlist {
+		seccomp_ret_kill_process
+	} else {
+		seccomp_ret_allow
+	}
+
+	for rule in config.rules {
+		sys_nr := resolve_syscall(rule.sys)!
+		matched_action_val := get_action_value(rule.action, config.errno_code)
+
+		a := rule.args.len
+		skip_offset := u8(4 * a + 1)
+
 		filter << C.sock_filter{
 			code: bpf_jmp | bpf_jeq | bpf_k
-			jt:   jt_offset
-			jf:   0
-			k:    u32(sys_nr)
+			jt: 0
+			jf: skip_offset
+			k: u32(sys_nr)
+		}
+
+		for i, arg_rule in rule.args {
+			rem := a - i - 1
+			val_lo := u32(arg_rule.value & 0xffffffff)
+			val_hi := u32(arg_rule.value >> 32)
+			arg_offset := u32(16 + arg_rule.index * 8)
+
+			filter << C.sock_filter{
+				code: bpf_ld | bpf_w | bpf_abs
+				k: arg_offset
+			}
+			filter << C.sock_filter{
+				code: bpf_jmp | bpf_jeq | bpf_k
+				jt: 0
+				jf: u8(4 * rem + 3)
+				k: val_lo
+			}
+			filter << C.sock_filter{
+				code: bpf_ld | bpf_w | bpf_abs
+				k: arg_offset + 4
+			}
+			filter << C.sock_filter{
+				code: bpf_jmp | bpf_jeq | bpf_k
+				jt: 0
+				jf: u8(4 * rem + 1)
+				k: val_hi
+			}
+		}
+
+		filter << C.sock_filter{
+			code: bpf_ret | bpf_k
+			jt: 0
+			jf: 0
+			k: matched_action_val
 		}
 	}
 
-	matched_action_val := get_action_value(config.action, config.errno_code)
-	default_action_val := seccomp_ret_allow
-
-	mut default_action := default_action_val
-	mut matched_action := matched_action_val
-
-	if config.filter_type == .allowlist {
-		default_action = matched_action_val
-		matched_action = default_action_val
-	}
-
 	filter << C.sock_filter{
 		code: bpf_ret | bpf_k
 		jt: 0
 		jf: 0
-		k: default_action
-	}
-	filter << C.sock_filter{
-		code: bpf_ret | bpf_k
-		jt: 0
-		jf: 0
-		k: matched_action
+		k: default_action_val
 	}
 
 	return filter
@@ -224,26 +356,44 @@ pub fn apply(config FilterConfig) ! {
 }
 
 pub fn block(syscalls []Syscall) ! {
+	mut rules := []SyscallRule{cap: syscalls.len}
+	for sys in syscalls {
+		rules << SyscallRule{
+			sys: sys
+			action: .kill_process
+		}
+	}
 	apply(
 		filter_type: .blocklist
-		syscalls: syscalls
-		action: .kill_process
+		rules: rules
 	)!
 }
 
 pub fn block_with_errno(syscalls []Syscall, errno_code int) ! {
+	mut rules := []SyscallRule{cap: syscalls.len}
+	for sys in syscalls {
+		rules << SyscallRule{
+			sys: sys
+			action: .errno_error
+		}
+	}
 	apply(
 		filter_type: .blocklist
-		syscalls: syscalls
-		action: .errno_error
+		rules: rules
 		errno_code: errno_code
 	)!
 }
 
 pub fn allow(syscalls []Syscall) ! {
+	mut rules := []SyscallRule{cap: syscalls.len}
+	for sys in syscalls {
+		rules << SyscallRule{
+			sys: sys
+			action: .allow
+		}
+	}
 	apply(
 		filter_type: .allowlist
-		syscalls: syscalls
-		action: .kill_process
+		rules: rules
 	)!
 }
