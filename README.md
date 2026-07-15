@@ -6,6 +6,8 @@
 
 - **Comprehensive Upstream Syscall Coverage**: Automatically generated directly from the official Linux kernel git tree on GitHub, covering 100% of all native system calls.
 - **User-Friendly Syscall Invocation**: Execute raw system calls cleanly via `vcomp.call` without manually declaring C functions or using `unsafe` blocks.
+- **Fluent API / Builder Pattern**: Easily construct complex rule sets using method chaining.
+- **Advanced Argument Filtering**: Inspect and restrict 64-bit system call arguments directly from V.
 - **Blocklist & Allowlist**: Easily block or restrict syscalls.
 - **Custom Actions**: Supports `kill_process`, `kill_thread`, `trap`, `allow`, and custom `errno` codes.
 - **Multi-Arch Support**: Resolves syscall names for `amd64` (x86_64), `arm64`, `i386`, `arm32`, and `rv64` (RISC-V 64).
@@ -35,26 +37,46 @@ This writes the unified, multi-arch `syscalls.v` table containing complete mappi
 
 ```v
 import vcomp
-import os
 
 fn main() {
 	println('Applying BPF filter...')
 
-	vcomp.block_with_errno(['ptrace'], 1) or {
-		println('Failed to apply filter: ${err}')
-		return
-	}
+	mut filter := vcomp.new_filter()
+	filter.set_type(.allowlist)
+		.allow('write').where_arg(0, .eq, 1)
+		.allow('exit_group')
+		.apply() or {
+			println('Failed to apply filter: ${err}')
+			return
+		}
 
 	println('Filter applied successfully!')
-	println('Testing ptrace block...')
+	println('Testing write to stdout (FD 1)...')
 
-	res := vcomp.call('ptrace', 0, 0, 0, 0) or {
-		println('ptrace failed as expected! Error details: ${err}')
+	vcomp.call('write', 1, 'This is allowed!\n', 17) or {
+		println(err)
 		return
 	}
-	println('WARNING: ptrace call was allowed. Result: ${res}')
+
+	println('Testing write to stderr (FD 2)...')
+
+	vcomp.call('write', 2, 'This will be blocked!\n', 22) or {
+		println('Error: ${err}')
+		return
+	}
 }
 ```
+
+## Builder API Reference
+
+- `new_filter()`: Creates a new builder instance.
+- `set_type(t FilterType)`: Configures the filter behavior (`.blocklist` or `.allowlist`).
+- `set_errno(code int)`: Sets the default POSIX errno code returned when `block_with_errno` triggers.
+- `block(sys Syscall)`: Appends a system call blocking rule (`.kill_process`).
+- `block_with_errno(sys Syscall)`: Appends a system call blocking rule that returns a specific errno.
+- `allow(sys Syscall)`: Appends a system call allow rule (`.allow`).
+- `where_arg(index int, op Op, value u64)`: Adds a 64-bit argument constraint to the last appended rule.
+- `apply()`: Evaluates the configuration, compiles BPF bytecode, and activates the Seccomp filter.
 
 ## Supported Platforms
 
