@@ -5,6 +5,7 @@
 ## Features
 
 - **Comprehensive Upstream Syscall Coverage**: Automatically generated directly from the official Linux kernel git tree on GitHub, covering 100% of all native system calls.
+- **User-Friendly Syscall Invocation**: Execute raw system calls cleanly via `vcomp.call` without manually declaring C functions or using `unsafe` blocks.
 - **Blocklist & Allowlist**: Easily block or restrict syscalls.
 - **Custom Actions**: Supports `kill_process`, `kill_thread`, `trap`, `allow`, and custom `errno` codes.
 - **Multi-Arch Support**: Resolves syscall names for `amd64` (x86_64), `arm64`, `i386`, `arm32`, and `rv64` (RISC-V 64).
@@ -36,8 +37,6 @@ This writes the unified, multi-arch `syscalls.v` table containing complete mappi
 import vcomp
 import os
 
-fn C.syscall(number int, arg1 voidptr, arg2 voidptr, arg3 voidptr, arg4 voidptr) int
-
 fn main() {
 	println('Applying BPF filter...')
 
@@ -49,18 +48,11 @@ fn main() {
 	println('Filter applied successfully!')
 	println('Testing ptrace block...')
 
-	ptrace_num := vcomp.get_syscall_number('ptrace') or {
-		println(err)
+	res := vcomp.call('ptrace', 0, 0, 0, 0) or {
+		println('ptrace failed as expected! Error details: ${err}')
 		return
 	}
-
-	res := unsafe { C.syscall(ptrace_num, voidptr(0), voidptr(0), voidptr(0), voidptr(0)) }
-	if res == -1 {
-		err_msg := os.error_posix()
-		println('ptrace failed as expected! Error details: ${err_msg}')
-	} else {
-		println('WARNING: ptrace call was allowed.')
-	}
+	println('WARNING: ptrace call was allowed. Result: ${res}')
 }
 ```
 
