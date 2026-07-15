@@ -1,4 +1,5 @@
 module vcomp
+import os
 
 #flag -D_GNU_SOURCE
 #include <sys/prctl.h>
@@ -39,6 +40,7 @@ pub mut:
 }
 
 fn C.prctl(option int, arg2 u64, arg3 u64, arg4 u64, arg5 u64) int
+fn C.syscall(number int, arg1 voidptr, arg2 voidptr, arg3 voidptr, arg4 voidptr, arg5 voidptr, arg6 voidptr) i64
 
 pub enum FilterType {
 	blocklist
@@ -54,6 +56,7 @@ pub enum Action {
 }
 
 pub type Syscall = int | string
+pub type SyscallArg = int | u64 | voidptr | string
 
 pub struct FilterConfig {
 pub:
@@ -87,6 +90,31 @@ fn get_action_value(action Action, errno_code int) u32 {
 		.allow        { return seccomp_ret_allow }
 		.errno_error  { return seccomp_ret_errno | u32(errno_code & 0xffff) }
 	}
+}
+
+fn cast_arg(arg SyscallArg) voidptr {
+	match arg {
+		int { return voidptr(usize(arg)) }
+		u64 { return voidptr(usize(arg)) }
+		voidptr { return arg }
+		string { return voidptr(arg.str) }
+	}
+}
+
+pub fn call(sys Syscall, args ...SyscallArg) !i64 {
+	sys_nr := resolve_syscall(sys)!
+	mut c_args := []voidptr{len: 6, init: voidptr(0)}
+	for i, arg in args {
+		if i >= 6 {
+			break
+		}
+		c_args[i] = cast_arg(arg)
+	}
+	res := unsafe { C.syscall(sys_nr, c_args[0], c_args[1], c_args[2], c_args[3], c_args[4], c_args[5]) }
+	if res == -1 {
+		return error(os.error_posix().msg())
+	}
+	return res
 }
 
 pub fn get_syscall_number(sys Syscall) !int {
