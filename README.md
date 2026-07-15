@@ -4,9 +4,10 @@
 
 ## Features
 
+- **Comprehensive Upstream Syscall Coverage**: Automatically generated directly from the official Linux kernel git tree on GitHub, covering 100% of all native system calls.
 - **Blocklist & Allowlist**: Easily block or restrict syscalls.
 - **Custom Actions**: Supports `kill_process`, `kill_thread`, `trap`, `allow`, and custom `errno` codes.
-- **Multi-Arch Support**: Resolves common syscall names for `x86_64`, `ARM64`, `i386`, `ARM32`, and `RISC-V 64`.
+- **Multi-Arch Support**: Resolves syscall names for `amd64` (x86_64), `arm64`, `i386`, `arm32`, and `rv64` (RISC-V 64).
 - **Flexible Input**: Accepts syscalls as either `string` names or raw `int` numbers.
 
 ## Installation
@@ -17,21 +18,29 @@ You can install this module using the V package manager:
 v install --git https://github.com/tailsmails/vcomp
 ```
 
-## Quick Start Example
+## Syscall Table Generator (For Developers)
 
-This self-contained example blocks the `ptrace` system call with an `EPERM` (1) errno, and then attempts to call it using raw C syscalls to verify that the restriction is actively enforced.
+The repository includes a generator script that fetches the latest official system call numbers for all supported architectures directly from the upstream Linux kernel source repository.
+
+To update or regenerate the syscall table:
+
+```bash
+python3 syscall_res.py
+```
+
+This writes the unified, multi-arch `syscalls.v` table containing complete mappings for all architectures.
+
+## Quick Start Example
 
 ```v
 import vcomp
 import os
 
-// Declare the external C syscall function
 fn C.syscall(number int, arg1 voidptr, arg2 voidptr, arg3 voidptr, arg4 voidptr) int
 
 fn main() {
 	println('Applying BPF filter...')
 
-	// Block 'ptrace' and return errno 1 (EPERM - Operation not permitted) if called
 	vcomp.block_with_errno(['ptrace'], 1) or {
 		println('Failed to apply filter: ${err}')
 		return
@@ -40,13 +49,11 @@ fn main() {
 	println('Filter applied successfully!')
 	println('Testing ptrace block...')
 
-	// Dynamically get the platform-specific syscall number for ptrace
 	ptrace_num := vcomp.get_syscall_number('ptrace') or {
 		println(err)
 		return
 	}
 
-	// Make a raw syscall to test the filter
 	res := unsafe { C.syscall(ptrace_num, voidptr(0), voidptr(0), voidptr(0), voidptr(0)) }
 	if res == -1 {
 		err_msg := os.error_posix()
