@@ -49,6 +49,9 @@ pub const bpf_w = u16(0x00)
 pub const bpf_abs = u16(0x20)
 pub const bpf_jmp = u16(0x05)
 pub const bpf_jeq = u16(0x15)
+pub const bpf_jgt = u16(0x25)
+pub const bpf_jge = u16(0x35)
+pub const bpf_jset = u16(0x45)
 pub const bpf_k = u16(0x00)
 pub const bpf_ret = u16(0x06)
 
@@ -79,6 +82,10 @@ pub enum Action {
 
 pub enum Op {
 	eq
+	neq
+	gt
+	ge
+	bits_set
 }
 
 pub struct ArgRule {
@@ -295,9 +302,61 @@ pub fn build_bpf_filter(config FilterConfig) ![]C.sock_filter {
 		sys_nr := resolve_syscall(rule.sys)!
 		matched_action_val := get_action_value(rule.action, config.errno_code)
 
-		a := rule.args.len
-		skip_offset := u8(4 * a + 1)
+		mut rule_filter := []C.sock_filter{}
 
+		for k, arg_rule in rule.args {
+			val_lo := u32(arg_rule.value & 0xffffffff)
+			val_hi := u32(arg_rule.value >> 32)
+			arg_offset := u32(16 + arg_rule.index * 8)
+
+			mut r := 0
+			for m in (k + 1) .. rule.args.len {
+				if rule.args[m].op == .gt || rule.args[m].op == .ge {
+					r += 5
+				} else {
+					r += 4
+				}
+			}
+
+			r_fail := u8(r + 1)
+
+			match arg_rule.op {
+				.eq {
+					rule_filter << C.sock_filter{ code: bpf_ld | bpf_w | bpf_abs, k: arg_offset }
+					rule_filter << C.sock_filter{ code: bpf_jmp | bpf_jeq | bpf_k, jt: 0, jf: u8(r + 3), k: val_lo }
+					rule_filter << C.sock_filter{ code: bpf_ld | bpf_w | bpf_abs, k: arg_offset + 4 }
+					rule_filter << C.sock_filter{ code: bpf_jmp | bpf_jeq | bpf_k, jt: 0, jf: r_fail, k: val_hi }
+				}
+				.neq {
+					rule_filter << C.sock_filter{ code: bpf_ld | bpf_w | bpf_abs, k: arg_offset }
+					rule_filter << C.sock_filter{ code: bpf_jmp | bpf_jeq | bpf_k, jt: 0, jf: 2, k: val_lo }
+					rule_filter << C.sock_filter{ code: bpf_ld | bpf_w | bpf_abs, k: arg_offset + 4 }
+					rule_filter << C.sock_filter{ code: bpf_jmp | bpf_jeq | bpf_k, jt: r_fail, jf: 0, k: val_hi }
+				}
+				.bits_set {
+					rule_filter << C.sock_filter{ code: bpf_ld | bpf_w | bpf_abs, k: arg_offset }
+					rule_filter << C.sock_filter{ code: bpf_jmp | bpf_jset | bpf_k, jt: 2, jf: 0, k: val_lo }
+					rule_filter << C.sock_filter{ code: bpf_ld | bpf_w | bpf_abs, k: arg_offset + 4 }
+					rule_filter << C.sock_filter{ code: bpf_jmp | bpf_jset | bpf_k, jt: 0, jf: r_fail, k: val_hi }
+				}
+				.gt {
+					rule_filter << C.sock_filter{ code: bpf_ld | bpf_w | bpf_abs, k: arg_offset + 4 }
+					rule_filter << C.sock_filter{ code: bpf_jmp | bpf_jgt | bpf_k, jt: 3, jf: 0, k: val_hi }
+					rule_filter << C.sock_filter{ code: bpf_jmp | bpf_jeq | bpf_k, jt: 0, jf: u8(r + 3), k: val_hi }
+					rule_filter << C.sock_filter{ code: bpf_ld | bpf_w | bpf_abs, k: arg_offset }
+					rule_filter << C.sock_filter{ code: bpf_jmp | bpf_jgt | bpf_k, jt: 0, jf: r_fail, k: val_lo }
+				}
+				.ge {
+					rule_filter << C.sock_filter{ code: bpf_ld | bpf_w | bpf_abs, k: arg_offset + 4 }
+					rule_filter << C.sock_filter{ code: bpf_jmp | bpf_jgt | bpf_k, jt: 3, jf: 0, k: val_hi }
+					rule_filter << C.sock_filter{ code: bpf_jmp | bpf_jeq | bpf_k, jt: 0, jf: u8(r + 3), k: val_hi }
+					rule_filter << C.sock_filter{ code: bpf_ld | bpf_w | bpf_abs, k: arg_offset }
+					rule_filter << C.sock_filter{ code: bpf_jmp | bpf_jge | bpf_k, jt: 0, jf: r_fail, k: val_lo }
+				}
+			}
+		}
+
+		skip_offset := u8(rule_filter.len + 1)
 		filter << C.sock_filter{
 			code: bpf_jmp | bpf_jeq | bpf_k
 			jt: 0
@@ -305,32 +364,8 @@ pub fn build_bpf_filter(config FilterConfig) ![]C.sock_filter {
 			k: u32(sys_nr)
 		}
 
-		for i, arg_rule in rule.args {
-			rem := a - i - 1
-			val_lo := u32(arg_rule.value & 0xffffffff)
-			val_hi := u32(arg_rule.value >> 32)
-			arg_offset := u32(16 + arg_rule.index * 8)
-
-			filter << C.sock_filter{
-				code: bpf_ld | bpf_w | bpf_abs
-				k: arg_offset
-			}
-			filter << C.sock_filter{
-				code: bpf_jmp | bpf_jeq | bpf_k
-				jt: 0
-				jf: u8(4 * rem + 3)
-				k: val_lo
-			}
-			filter << C.sock_filter{
-				code: bpf_ld | bpf_w | bpf_abs
-				k: arg_offset + 4
-			}
-			filter << C.sock_filter{
-				code: bpf_jmp | bpf_jeq | bpf_k
-				jt: 0
-				jf: u8(4 * rem + 1)
-				k: val_hi
-			}
+		for f in rule_filter {
+			filter << f
 		}
 
 		filter << C.sock_filter{
