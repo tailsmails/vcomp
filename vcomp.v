@@ -1,4 +1,5 @@
 module vcomp
+
 import os
 
 #flag -D_GNU_SOURCE
@@ -38,6 +39,10 @@ $if linux || android || termux {
 		filter &C.sock_filter
 	}
 }
+
+pub const pr_set_no_new_privs = 38
+pub const pr_set_seccomp = 22
+pub const seccomp_mode_filter = 2
 
 pub const bpf_ld = u16(0x00)
 pub const bpf_w = u16(0x00)
@@ -114,18 +119,21 @@ pub fn new_filter() FilterBuilder {
 
 pub fn (b FilterBuilder) set_type(t FilterType) FilterBuilder {
 	mut new_b := b
+	new_b.rules = b.rules.clone()
 	new_b.filter_type = t
 	return new_b
 }
 
 pub fn (b FilterBuilder) set_errno(code int) FilterBuilder {
 	mut new_b := b
+	new_b.rules = b.rules.clone()
 	new_b.errno_code = code
 	return new_b
 }
 
 pub fn (b FilterBuilder) block(sys Syscall) FilterBuilder {
 	mut new_b := b
+	new_b.rules = b.rules.clone()
 	new_b.rules << SyscallRule{
 		sys: sys
 		action: .kill_process
@@ -135,6 +143,7 @@ pub fn (b FilterBuilder) block(sys Syscall) FilterBuilder {
 
 pub fn (b FilterBuilder) block_with_errno(sys Syscall) FilterBuilder {
 	mut new_b := b
+	new_b.rules = b.rules.clone()
 	new_b.rules << SyscallRule{
 		sys: sys
 		action: .errno_error
@@ -144,6 +153,7 @@ pub fn (b FilterBuilder) block_with_errno(sys Syscall) FilterBuilder {
 
 pub fn (b FilterBuilder) allow(sys Syscall) FilterBuilder {
 	mut new_b := b
+	new_b.rules = b.rules.clone()
 	new_b.rules << SyscallRule{
 		sys: sys
 		action: .allow
@@ -153,11 +163,18 @@ pub fn (b FilterBuilder) allow(sys Syscall) FilterBuilder {
 
 pub fn (b FilterBuilder) where_arg(index int, op Op, value u64) FilterBuilder {
 	mut new_b := b
+	new_b.rules = b.rules.clone()
 	if new_b.rules.len > 0 {
-		new_b.rules[new_b.rules.len - 1].args.clone() << ArgRule{
+		last_idx := new_b.rules.len - 1
+		mut rule := new_b.rules[last_idx]
+		rule.args = rule.args.clone()
+		rule.args << ArgRule{
 			index: index
 			op: op
 			value: value
+		}
+		unsafe {
+			new_b.rules[last_idx] = rule
 		}
 	}
 	return new_b
@@ -336,7 +353,7 @@ pub fn build_bpf_filter(config FilterConfig) ![]C.sock_filter {
 
 pub fn apply(config FilterConfig) ! {
 	$if linux || android || termux {
-		if unsafe { C.prctl(38, 1, 0, 0, 0) } == -1 {
+		if unsafe { C.prctl(pr_set_no_new_privs, 1, 0, 0, 0) } == -1 {
 			return error('failed to set no_new_privs')
 		}
 
@@ -347,7 +364,7 @@ pub fn apply(config FilterConfig) ! {
 			filter: &filter_bytecode[0]
 		}
 
-		if unsafe { C.prctl(22, 2, u64(voidptr(&prog)), 0, 0) } == -1 {
+		if unsafe { C.prctl(pr_set_seccomp, seccomp_mode_filter, u64(voidptr(&prog)), 0, 0) } == -1 {
 			return error('failed to load raw bpf filter')
 		}
 	} $else {
